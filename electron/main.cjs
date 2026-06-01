@@ -1,6 +1,8 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const { execFile, spawn } = require("child_process");
-const fs = require("fs");
+// Electron's bundled `fs` treats *.asar paths as archives, which locks them and
+// breaks rename/write on app.asar (EBUSY). `original-fs` is the unpatched Node fs.
+const fs = require("original-fs");
 const path = require("path");
 
 // ─── Constants ────────────────────────────────────────────────────────────────
