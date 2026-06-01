@@ -217,6 +217,52 @@ function uninstallAcord(resourcesPath) {
 	}
 }
 
+// ─── Orchestration (shared by IPC + CLI) ────────────────────────────────────────
+
+async function runInstall(resourcesPath, onProgress) {
+	try {
+		const restartInstall = await prepareDiscordForAction(
+			resourcesPath,
+			onProgress,
+		);
+		await installAcord(resourcesPath, onProgress);
+		onProgress("Done!", 100);
+		return { result: { success: true }, restartInstall };
+	} catch (err) {
+		return {
+			result: {
+				success: false,
+				error: err instanceof Error ? err.message : String(err),
+			},
+			restartInstall: null,
+		};
+	}
+}
+
+async function runUninstall(resourcesPath, onProgress) {
+	onProgress("Preparing...", 0);
+	await new Promise((r) => setTimeout(r, 80));
+	try {
+		const restartInstall = await prepareDiscordForAction(
+			resourcesPath,
+			onProgress,
+		);
+		onProgress("Removing files...", 50);
+		await new Promise((r) => setTimeout(r, 150));
+		uninstallAcord(resourcesPath);
+		onProgress("Done!", 100);
+		return { result: { success: true }, restartInstall };
+	} catch (err) {
+		return {
+			result: {
+				success: false,
+				error: err instanceof Error ? err.message : String(err),
+			},
+			restartInstall: null,
+		};
+	}
+}
+
 // ─── IPC ──────────────────────────────────────────────────────────────────────
 
 ipcMain.on("window:close", (event) => {
@@ -229,50 +275,98 @@ ipcMain.handle("acord:findDiscordInstalls", () => findDiscordInstalls());
 ipcMain.handle("acord:install", async (event, resourcesPath) => {
 	const sendProgress = (message, percent) =>
 		event.sender.send("acord:progress", { message, percent });
-	try {
-		const restartInstall = await prepareDiscordForAction(
-			resourcesPath,
-			sendProgress,
-		);
-		await installAcord(resourcesPath, sendProgress);
-		sendProgress("Done!", 100);
-		if (restartInstall) {
-			restartDiscordAfterResponse(restartInstall);
-		}
-		return { success: true };
-	} catch (err) {
-		return {
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		};
-	}
+	const { result, restartInstall } = await runInstall(
+		resourcesPath,
+		sendProgress,
+	);
+	if (restartInstall) restartDiscordAfterResponse(restartInstall);
+	return result;
 });
 
 ipcMain.handle("acord:uninstall", async (event, resourcesPath) => {
 	const sendProgress = (message, percent) =>
 		event.sender.send("acord:progress", { message, percent });
-	sendProgress("Preparing...", 0);
-	await new Promise((r) => setTimeout(r, 80));
-	try {
-		const restartInstall = await prepareDiscordForAction(
-			resourcesPath,
-			sendProgress,
-		);
-		sendProgress("Removing files...", 50);
-		await new Promise((r) => setTimeout(r, 150));
-		uninstallAcord(resourcesPath);
-		sendProgress("Done!", 100);
-		if (restartInstall) {
-			restartDiscordAfterResponse(restartInstall);
-		}
-		return { success: true };
-	} catch (err) {
-		return {
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		};
-	}
+	const { result, restartInstall } = await runUninstall(
+		resourcesPath,
+		sendProgress,
+	);
+	if (restartInstall) restartDiscordAfterResponse(restartInstall);
+	return result;
 });
+
+// ─── CLI ────────────────────────────────────────────────────────────────────────
+
+// Accepts variant names and common aliases, mapped to our platform keys.
+const PLATFORM_ALIASES = {
+	stable: "stable",
+	discord: "stable",
+	ptb: "ptb",
+	discordptb: "ptb",
+	canary: "canary",
+	discordcanary: "canary",
+};
+
+// Scans argv for `--install <variant>` / `--uninstall <variant>` (also `--install=stable`).
+function parseCliAction(argv) {
+	const args = argv.slice(1);
+	for (let i = 0; i < args.length; i++) {
+		let flag = args[i].toLowerCase();
+		let value = args[i + 1];
+		if (flag.includes("=")) [flag, value] = flag.split("=");
+		if (flag === "--install" || flag === "--uninstall") {
+			return {
+				action: flag === "--install" ? "install" : "uninstall",
+				variant: (value ?? "").toLowerCase(),
+			};
+		}
+	}
+	return null;
+}
+
+async function runCli({ action, variant }) {
+	const platform = PLATFORM_ALIASES[variant];
+	if (!platform) {
+		console.error(
+			`Unknown or missing variant '${variant || ""}'.\n` +
+				`Usage: AcordClientInstaller --install|--uninstall <stable|ptb|canary>`,
+		);
+		return 1;
+	}
+
+	const install = findDiscordInstalls().find((i) => i.platform === platform);
+	if (!install) {
+		console.error(`Discord variant '${platform}' is not installed on this system.`);
+		return 1;
+	}
+
+	const onProgress = (message, percent) =>
+		console.log(`[${String(percent).padStart(3, " ")}%] ${message}`);
+
+	const { result, restartInstall } =
+		action === "install"
+			? await runInstall(install.resourcesPath, onProgress)
+			: await runUninstall(install.resourcesPath, onProgress);
+
+	if (!result.success) {
+		console.error(`Error: ${result.error}`);
+		return 1;
+	}
+
+	console.log(
+		action === "install"
+			? `Acord installed for ${install.name}.`
+			: `Acord uninstalled from ${install.name}.`,
+	);
+
+	// We are about to exit, so restart Discord synchronously rather than on a timer.
+	if (restartInstall) {
+		try {
+			startDiscord(restartInstall);
+			await new Promise((r) => setTimeout(r, 600));
+		} catch {}
+	}
+	return 0;
+}
 
 // ─── Window ───────────────────────────────────────────────────────────────────
 
@@ -307,13 +401,23 @@ function createWindow() {
 	}
 }
 
-app.whenReady().then(() => {
-	createWindow();
+const cliAction = parseCliAction(process.argv);
 
-	app.on("activate", () => {
-		if (BrowserWindow.getAllWindows().length === 0) createWindow();
+// Headless CLI mode (`--install`/`--uninstall`) skips the window entirely.
+if (cliAction) {
+	app.whenReady().then(async () => {
+		const code = await runCli(cliAction);
+		app.exit(code);
 	});
-});
+} else {
+	app.whenReady().then(() => {
+		createWindow();
+
+		app.on("activate", () => {
+			if (BrowserWindow.getAllWindows().length === 0) createWindow();
+		});
+	});
+}
 
 app.on("window-all-closed", () => {
 	app.quit();

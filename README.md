@@ -1,69 +1,61 @@
-# Svelte Electrobun Template
+# Acord Client Installer
 
-A fast Electrobun desktop app template with Svelte 5 and Vite for hot module replacement (HMR).
+A small, portable installer for [Acord](https://github.com/acord-standalone/acord-client) — a Discord client mod. It patches your Discord installation by swapping `app.asar`, and can just as easily restore the original.
 
-## Getting Started
+Built with **Electron** + **Svelte**. Windows only.
 
-```bash
-# Install dependencies
-bun install
+## Features
 
-# Development without HMR (uses bundled assets)
-bun run dev
+- One-click install / uninstall for **Discord**, **Discord PTB**, and **Discord Canary**
+- Automatically detects installed Discord variants
+- Closes Discord before patching and restarts it afterwards
+- Keeps a backup of the original `app.asar`, so uninstalling is safe
+- Ships as a single portable `.exe` — no setup, just run it
+- Optional command-line interface for scripting
 
-# Development with HMR (recommended)
-bun run dev:hmr
+## Download
 
-# Build for production
-bun run build
+Grab `AcordClientInstaller.exe` from the releases, or build it yourself (see below). 
 
-# Build for production release
-bun run build:prod
+## Command-line usage
+
+The same executable can run headless, without opening a window:
+
+```sh
+AcordClientInstaller.exe --install <variant>
+AcordClientInstaller.exe --uninstall <variant>
 ```
 
-## How HMR Works
+`<variant>` is one of `stable`, `ptb`, or `canary`.
 
-When you run `bun run dev:hmr`:
+```sh
+# Install Acord on Discord Stable
+AcordClientInstaller.exe --install stable
 
-1. **Vite dev server** starts on `http://localhost:5173` with HMR enabled
-2. **Electrobun** starts and detects the running Vite server
-3. The app loads from the Vite dev server instead of bundled assets
-4. Changes to Svelte components update instantly without full page reload
-
-When you run `bun run dev` (without HMR):
-
-1. Electrobun starts and loads from `views://mainview/index.html`
-2. You need to rebuild (`bun run build`) to see changes
-
-## Project Structure
-
-```
-├── src/
-│   ├── bun/
-│   │   └── index.ts        # Main process (Electrobun/Bun)
-│   └── mainview/
-│       ├── App.svelte      # Svelte app component
-│       ├── main.ts         # Svelte entry point
-│       ├── index.html      # HTML template
-│       └── app.css         # Global styles
-├── electrobun.config.ts    # Electrobun configuration
-├── vite.config.ts          # Vite configuration
-├── svelte.config.js        # Svelte configuration
-└── package.json
+# Remove Acord from Discord Canary
+AcordClientInstaller.exe --uninstall canary
 ```
 
-## Svelte 5 Features
+It exits with code `0` on success and `1` on failure.
 
-This template uses Svelte 5 with the new runes syntax:
+## Development
 
-- `$state()` - reactive state
-- `$derived()` - computed values
-- `$effect()` - side effects
+Requires [Node.js](https://nodejs.org).
 
-## Customizing
+```sh
+npm install      # install dependencies
+npm run dev      # run with Vite HMR + Electron
+npm start        # build the renderer and launch Electron
+```
 
-- **Svelte components**: Edit files in `src/mainview/`
-- **Global styles**: Edit `src/mainview/app.css`
-- **Vite settings**: Edit `vite.config.ts`
-- **Window settings**: Edit `src/bun/index.ts`
-- **App metadata**: Edit `electrobun.config.ts`
+## Building
+
+```sh
+npm run build
+```
+
+The portable executable is written to `release/AcordClientInstaller.exe`.
+
+## License
+
+See [LICENSE](LICENSE).
