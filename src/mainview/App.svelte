@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import gsap from "gsap";
-  import { Electroview } from "electrobun/view";
-  import type { AcordRPCSchema, DiscordInstall } from "../bun/index.ts";
+  import type { DiscordInstall } from "../types";
 
-  // --- RPC ---
+  // --- IPC ---
+
+  const acord = window.acord;
 
   let progressMessage = $state("Preparing...");
   let progressPercent = $state(0);
@@ -12,30 +13,22 @@
   let completeFromProgress: (() => void) | null = null;
   let finishingFromProgress = false;
 
-  const rpc = Electroview.defineRPC<AcordRPCSchema>({
-    handlers: {
-      messages: {
-        progress: ({ message, percent }) => {
-          progressMessage = message;
-          progressPercent = percent;
-          if (percent >= 100 && message === "Done!") {
-            completeFromProgress?.();
-            completeFromProgress = null;
-            void finishFromProgress();
-          }
-          if (progressBarEl) {
-            gsap.to(progressBarEl, {
-              width: `${percent}%`,
-              duration: 0.35,
-              ease: "power2.out",
-            });
-          }
-        },
-      },
-    },
+  acord.onProgress(({ message, percent }) => {
+    progressMessage = message;
+    progressPercent = percent;
+    if (percent >= 100 && message === "Done!") {
+      completeFromProgress?.();
+      completeFromProgress = null;
+      void finishFromProgress();
+    }
+    if (progressBarEl) {
+      gsap.to(progressBarEl, {
+        width: `${percent}%`,
+        duration: 0.35,
+        ease: "power2.out",
+      });
+    }
   });
-
-  new Electroview({ rpc });
 
   // --- State ---
 
@@ -109,7 +102,7 @@
   const color = (p: string) => PLATFORM_COLORS[p] ?? "#5865f2";
 
   async function refreshInstalls() {
-    installs = await rpc.request.findDiscordInstalls();
+    installs = await acord.findDiscordInstalls();
   }
 
   function waitForProgressComplete() {
@@ -150,9 +143,7 @@
     await navigate("installing");
     const progressDone = waitForProgressComplete();
     result = await Promise.race([
-      rpc.request.install({
-        resourcesPath: install.resourcesPath,
-      }),
+      acord.install(install.resourcesPath),
       progressDone,
     ]);
     completeFromProgress = null;
@@ -176,9 +167,7 @@
     await navigate("installing");
     const progressDone = waitForProgressComplete();
     result = await Promise.race([
-      rpc.request.uninstall({
-        resourcesPath: install.resourcesPath,
-      }),
+      acord.uninstall(install.resourcesPath),
       progressDone,
     ]);
     completeFromProgress = null;
@@ -233,6 +222,24 @@
 </script>
 
 <div class="app">
+  <header class="titlebar">
+    <span class="titlebar-brand">Acord Installer</span>
+    <button
+      class="titlebar-close"
+      onclick={() => acord.closeWindow()}
+      aria-label="Close"
+      title="Close"
+    >
+      <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true">
+        <path
+          d="M1 1 L11 11 M11 1 L1 11"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+        />
+      </svg>
+    </button>
+  </header>
   <div class="page-wrapper" bind:this={pageWrapper}>
     <!-- SPLASH -->
     {#if page === "splash"}
@@ -397,8 +404,8 @@
     padding: 0;
   }
   :global(:root) {
-    --native-frame-x: 14px;
-    --native-frame-y: 39px;
+    --native-frame-x: 0px;
+    --native-frame-y: 0px;
   }
   :global(html, body) {
     width: 100vw;
@@ -431,10 +438,56 @@
     background: #1e1f22;
     overflow: hidden;
     position: relative;
+    display: flex;
+    flex-direction: column;
   }
+
+  /* Custom titlebar (frameless window) */
+  .titlebar {
+    height: 32px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-left: 12px;
+    background: #1e1f22;
+    z-index: 20;
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+  .titlebar-brand {
+    font-size: 11.5px;
+    font-weight: 700;
+    color: #949ba4;
+    letter-spacing: 0.3px;
+    pointer-events: none;
+  }
+  .titlebar-close {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+    width: 46px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #949ba4;
+    border-radius: 0;
+    transition:
+      background 0.14s,
+      color 0.14s;
+  }
+  .titlebar-close:hover {
+    background: #da373c;
+    color: #fff;
+  }
+  .titlebar-close:active {
+    background: #a12d2f;
+  }
+
   .page-wrapper {
     width: 100%;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
   }
   .page {
     width: 100%;

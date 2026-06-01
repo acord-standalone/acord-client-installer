@@ -38,6 +38,9 @@ bower_components
 # Compiled binary addons (https://nodejs.org/api/addons.html)
 build/Release
 
+# Electron build output
+release/
+
 # Dependency directories
 node_modules/
 jspm_packages/

@@ -1,25 +1,48 @@
 {
-	"name": "electrobun-svelte",
-	"version": "1.0.0",
+	"name": "acord-client-installer",
+	"version": "0.0.1",
 	"type": "module",
-	"description": "Electrobun app with Svelte and Vite HMR",
+	"description": "Acord Client Installer — Electron app with Svelte and Vite",
+	"main": "electron/main.cjs",
 	"scripts": {
-		"start": "vite build && electrobun dev",
-		"dev": "electrobun dev --watch",
-		"dev:hmr": "concurrently \"bun run hmr\" \"bun run start\"",
-		"hmr": "vite --port 5173",
-		"build:canary": "vite build && electrobun build --env=canary"
+		"dev": "concurrently -k \"npm:dev:vite\" \"npm:dev:electron\"",
+		"dev:vite": "vite",
+		"dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
+		"build:renderer": "vite build",
+		"start": "npm run build:renderer && electron .",
+		"build": "npm run build:renderer && electron-builder --win portable"
 	},
 	"dependencies": {
-		"electrobun": "1.18.1",
 		"gsap": "^3.15.0"
 	},
 	"devDependencies": {
 		"@sveltejs/vite-plugin-svelte": "^5.0.1",
-		"@types/bun": "latest",
 		"concurrently": "^9.1.0",
+		"cross-env": "^7.0.3",
+		"electron": "^33.2.0",
+		"electron-builder": "^25.1.8",
 		"svelte": "^5.14.1",
 		"typescript": "^5.7.2",
-		"vite": "^6.0.3"
+		"vite": "^6.0.3",
+		"wait-on": "^8.0.1"
+	},
+	"build": {
+		"appId": "rest.armagan.acordclientinstaller",
+		"productName": "Acord Client Installer",
+		"directories": {
+			"output": "release"
+		},
+		"files": [
+			"electron/**/*",
+			"dist/**/*",
+			"icon.png"
+		],
+		"win": {
+			"target": "portable",
+			"icon": "icon.png"
+		},
+		"portable": {
+			"artifactName": "AcordClientInstaller.exe"
+		}
 	}
 }
