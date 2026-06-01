@@ -11,7 +11,8 @@
 		"build:canary": "vite build && electrobun build --env=canary"
 	},
 	"dependencies": {
-		"electrobun": "1.18.1"
+		"electrobun": "1.18.1",
+		"gsap": "^3.15.0"
 	},
 	"devDependencies": {
 		"@sveltejs/vite-plugin-svelte": "^5.0.1",

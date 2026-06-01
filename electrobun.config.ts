@@ -2,8 +2,8 @@ import type { ElectrobunConfig } from "electrobun";
 
 export default {
 	app: {
-		name: "svelte-app",
-		identifier: "svelteapp.electrobun.dev",
+		name: "Acord Client Installer",
+		identifier: "rest.armagan.acordclientinstaller",
 		version: "0.0.1",
 	},
 	build: {
@@ -22,6 +22,7 @@ export default {
 		},
 		win: {
 			bundleCEF: false,
+			icon: "icon.png",
 		},
 	},
 } satisfies ElectrobunConfig;
