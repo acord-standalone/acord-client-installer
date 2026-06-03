@@ -4,27 +4,41 @@ const { execFile, spawn } = require("child_process");
 // breaks rename/write on app.asar (EBUSY). `original-fs` is the unpatched Node fs.
 const fs = require("original-fs");
 const path = require("path");
+const os = require("os");
+
+// ─── Platform ───────────────────────────────────────────────────────────────
+
+const IS_WIN = process.platform === "win32";
+const IS_MAC = process.platform === "darwin";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const ASAR_URL =
 	"https://github.com/acord-standalone/acord-client/releases/download/latest/desktop.asar";
 
+// Windows install folder names (under %LOCALAPPDATA%).
 const DISCORD_NAMES = {
 	stable: "Discord",
 	ptb: "DiscordPTB",
 	canary: "DiscordCanary",
 };
 
-const DISCORD_PROCESS_NAMES = {
-	stable: "Discord",
-	ptb: "DiscordPTB",
-	canary: "DiscordCanary",
+// macOS application bundle names (under /Applications or ~/Applications).
+const MAC_APP_NAMES = {
+	stable: "Discord.app",
+	ptb: "Discord PTB.app",
+	canary: "Discord Canary.app",
 };
+
+// Running executable names, used by pgrep/pkill (mac) and Get-Process (win).
+const DISCORD_PROCESS_NAMES = IS_MAC
+	? { stable: "Discord", ptb: "Discord PTB", canary: "Discord Canary" }
+	: { stable: "Discord", ptb: "DiscordPTB", canary: "DiscordCanary" };
 
 // ─── Discord Discovery ────────────────────────────────────────────────────────
 
-function findResourcesPath(discordPath) {
+// Windows: %LOCALAPPDATA%/<Name>/app-<version>/resources
+function findWindowsResourcesPath(discordPath) {
 	if (!fs.existsSync(discordPath)) return null;
 	try {
 		const entries = fs.readdirSync(discordPath);
@@ -44,18 +58,46 @@ function findResourcesPath(discordPath) {
 	}
 }
 
-function findDiscordInstalls() {
+function findWindowsInstalls() {
 	const localAppData = process.env.LOCALAPPDATA ?? "";
 	const results = [];
 	for (const [platform, name] of Object.entries(DISCORD_NAMES)) {
 		const discordPath = path.join(localAppData, name);
-		const resourcesPath = findResourcesPath(discordPath);
+		const resourcesPath = findWindowsResourcesPath(discordPath);
 		if (resourcesPath) {
 			const isPatched = isAcordPatched(resourcesPath);
 			results.push({ platform, name, discordPath, resourcesPath, isPatched });
 		}
 	}
 	return results;
+}
+
+// macOS: <App>.app/Contents/Resources holds app.asar directly (no versioned dir).
+function findMacInstalls() {
+	const searchDirs = ["/Applications", path.join(os.homedir(), "Applications")];
+	const results = [];
+	for (const [platform, appName] of Object.entries(MAC_APP_NAMES)) {
+		for (const dir of searchDirs) {
+			const appPath = path.join(dir, appName);
+			const resourcesPath = path.join(appPath, "Contents", "Resources");
+			const hasApp = fs.existsSync(path.join(resourcesPath, "app.asar"));
+			if (hasApp || isAcordPatched(resourcesPath)) {
+				results.push({
+					platform,
+					name: appName.replace(/\.app$/, ""),
+					discordPath: appPath,
+					resourcesPath,
+					isPatched: isAcordPatched(resourcesPath),
+				});
+				break; // Prefer /Applications over ~/Applications.
+			}
+		}
+	}
+	return results;
+}
+
+function findDiscordInstalls() {
+	return IS_MAC ? findMacInstalls() : findWindowsInstalls();
 }
 
 function isAcordPatched(resourcesPath) {
@@ -93,7 +135,60 @@ function psQuote(value) {
 	return `'${value.replaceAll("'", "''")}'`;
 }
 
+// Resolves with the command's stdout even on a non-zero exit (pgrep/pkill use
+// exit codes to signal "no match"), so callers never reject on those.
+function runCommand(file, args) {
+	return new Promise((resolve) => {
+		execFile(file, args, { maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+			resolve({
+				ok: !err,
+				out: (stdout ?? "").toString().trim(),
+				err: (stderr ?? "").toString().trim(),
+			});
+		});
+	});
+}
+
+// ─── macOS privilege elevation ───────────────────────────────────────────────
+
+// True when Acord's app.asar lives in a directory we can't write to (e.g. a
+// root-owned /Applications), so the swap has to run with administrator rights.
+function needsMacElevation(resourcesPath) {
+	if (!IS_MAC) return false;
+	try {
+		fs.accessSync(resourcesPath, fs.constants.W_OK);
+		return false;
+	} catch {
+		return true;
+	}
+}
+
+function shQuote(value) {
+	return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function osaQuote(value) {
+	return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+// Runs a /bin/sh command as root via a native macOS authorization prompt.
+async function runMacAdminShell(shellCommand) {
+	const script = `do shell script ${osaQuote(shellCommand)} with administrator privileges`;
+	const { ok, out, err } = await runCommand("osascript", ["-e", script]);
+	if (!ok) {
+		if (/User canceled|-128/.test(err)) {
+			throw new Error("Administrator authorization was cancelled.");
+		}
+		throw new Error(err || out || "Administrator authorization failed.");
+	}
+	return out;
+}
+
 async function isDiscordProcessRunning(processName) {
+	if (IS_MAC) {
+		const { ok, out } = await runCommand("pgrep", ["-x", processName]);
+		return ok && out.length > 0;
+	}
 	const output = await runPowerShell(
 		`if (Get-Process -Name ${psQuote(processName)} -ErrorAction SilentlyContinue) { 'true' } else { 'false' }`,
 	);
@@ -105,13 +200,32 @@ async function stopDiscordProcess(processName, onProgress) {
 	if (!wasRunning) return false;
 
 	onProgress("Closing Discord...", 5);
-	await runPowerShell(
-		`Get-Process -Name ${psQuote(processName)} -ErrorAction SilentlyContinue | Stop-Process -Force; Wait-Process -Name ${psQuote(processName)} -Timeout 5 -ErrorAction SilentlyContinue`,
-	);
+	if (IS_MAC) {
+		await runCommand("pkill", ["-x", processName]);
+		// Wait up to ~5s for the process to actually exit before we touch app.asar.
+		for (let i = 0; i < 25; i++) {
+			if (!(await isDiscordProcessRunning(processName))) break;
+			await new Promise((r) => setTimeout(r, 200));
+		}
+	} else {
+		await runPowerShell(
+			`Get-Process -Name ${psQuote(processName)} -ErrorAction SilentlyContinue | Stop-Process -Force; Wait-Process -Name ${psQuote(processName)} -Timeout 5 -ErrorAction SilentlyContinue`,
+		);
+	}
 	return true;
 }
 
 function startDiscord(install) {
+	if (IS_MAC) {
+		if (!fs.existsSync(install.discordPath)) return;
+		const proc = spawn("open", [install.discordPath], {
+			detached: true,
+			stdio: "ignore",
+		});
+		proc.unref();
+		return;
+	}
+
 	const processName = DISCORD_PROCESS_NAMES[install.platform] ?? install.name;
 	const updateExe = path.join(install.discordPath, "Update.exe");
 	if (!fs.existsSync(updateExe)) return;
@@ -161,24 +275,32 @@ async function installAcord(resourcesPath, onProgress) {
 	const buffer = await response.arrayBuffer();
 
 	onProgress("Backing up original...", 68);
-	if (!fs.existsSync(appAsar)) {
+	if (!fs.existsSync(appAsar) && !fs.existsSync(backupAsar)) {
 		throw new Error("Discord app.asar not found.");
-	}
-	if (!fs.existsSync(backupAsar)) {
-		fs.renameSync(appAsar, backupAsar);
-		createdBackup = true;
-	} else {
-		fs.rmSync(appAsar, { recursive: true, force: true });
 	}
 
 	onProgress("Finishing up...", 85);
-	try {
-		fs.writeFileSync(appAsar, Buffer.from(buffer));
-	} catch (err) {
-		if (createdBackup && fs.existsSync(backupAsar) && !fs.existsSync(appAsar)) {
-			fs.renameSync(backupAsar, appAsar);
+	if (needsMacElevation(resourcesPath)) {
+		await installAcordElevated(appAsar, backupAsar, buffer);
+	} else {
+		if (!fs.existsSync(backupAsar)) {
+			fs.renameSync(appAsar, backupAsar);
+			createdBackup = true;
+		} else {
+			fs.rmSync(appAsar, { recursive: true, force: true });
 		}
-		throw err;
+		try {
+			fs.writeFileSync(appAsar, Buffer.from(buffer));
+		} catch (err) {
+			if (
+				createdBackup &&
+				fs.existsSync(backupAsar) &&
+				!fs.existsSync(appAsar)
+			) {
+				fs.renameSync(backupAsar, appAsar);
+			}
+			throw err;
+		}
 	}
 
 	if (!isAcordPatched(resourcesPath)) {
@@ -186,13 +308,37 @@ async function installAcord(resourcesPath, onProgress) {
 	}
 }
 
-function uninstallAcord(resourcesPath) {
+// Writes the downloaded asar to a temp file, then swaps it in as root: backs up
+// the original to _app.asar (first install only) and moves the new one in place.
+async function installAcordElevated(appAsar, backupAsar, buffer) {
+	const tmpFile = path.join(os.tmpdir(), `acord-${Date.now()}.asar`);
+	fs.writeFileSync(tmpFile, Buffer.from(buffer));
+	try {
+		const cmd =
+			`if [ ! -e ${shQuote(backupAsar)} ]; then mv ${shQuote(appAsar)} ${shQuote(backupAsar)}; fi && ` +
+			`mv -f ${shQuote(tmpFile)} ${shQuote(appAsar)}`;
+		await runMacAdminShell(cmd);
+	} finally {
+		fs.rmSync(tmpFile, { force: true });
+	}
+}
+
+async function uninstallAcord(resourcesPath) {
 	const appAsar = path.join(resourcesPath, "app.asar");
 	const appAsarTmp = path.join(resourcesPath, "app.asar.tmp");
 	const backupAsar = path.join(resourcesPath, "_app.asar");
 
 	if (!fs.existsSync(backupAsar)) {
 		throw new Error("Backup not found. Acord may already be uninstalled.");
+	}
+
+	if (needsMacElevation(resourcesPath)) {
+		// Overwrite the Acord asar with the original backup in one atomic move.
+		await runMacAdminShell(`mv -f ${shQuote(backupAsar)} ${shQuote(appAsar)}`);
+		if (isAcordPatched(resourcesPath)) {
+			throw new Error("Removal finished, but patch state could not be verified.");
+		}
+		return;
 	}
 
 	fs.rmSync(appAsarTmp, { recursive: true, force: true });
@@ -249,7 +395,7 @@ async function runUninstall(resourcesPath, onProgress) {
 		);
 		onProgress("Removing files...", 50);
 		await new Promise((r) => setTimeout(r, 150));
-		uninstallAcord(resourcesPath);
+		await uninstallAcord(resourcesPath);
 		onProgress("Done!", 100);
 		return { result: { success: true }, restartInstall };
 	} catch (err) {
